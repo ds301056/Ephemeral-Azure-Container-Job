@@ -1,0 +1,64 @@
+name: Build → Push → Run ACA Job
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  build-push-run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔐 Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: 🐳 Login to ACR
+        run: |
+          echo "Logging into ACR..."
+          docker login ${{ secrets.ACR_LOGIN_SERVER }} \
+            -u ${{ secrets.ACR_USERNAME }} \
+            -p ${{ secrets.ACR_PASSWORD }}
+
+      - name: 🏗️ Build Docker image
+        working-directory: app
+        run: |
+          IMAGE_TAG="${{ secrets.ACR_LOGIN_SERVER }}/ephemeral-job:${{ github.run_number }}"
+          echo "Building image: $IMAGE_TAG"
+          docker build -t "$IMAGE_TAG" .
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+
+      - name: 📤 Push to ACR
+        run: |
+          echo "Pushing image: $IMAGE_TAG"
+          docker push "$IMAGE_TAG"
+
+      - name: 🔄 Update ACA Job image
+        run: |
+          echo "Updating Container Apps Job to use new image..."
+          az containerapp job update \
+            --name trending-job \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --image "$IMAGE_TAG"
+
+      - name: ▶️ Start ACA Job execution
+        run: |
+          echo "Starting job execution..."
+          az containerapp job start \
+            --name trending-job \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }}
+
+      - name: ⏳ Wait for job completion
+        run: sleep 60
+
+      - name: 📊 Show job status
+        run: |
+          echo "Recent job executions:"
+          az containerapp job execution list \
+            --name trending-job \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --output table
